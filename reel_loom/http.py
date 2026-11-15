@@ -63,7 +63,9 @@ class MediaHandler(BaseHTTPRequestHandler):
         require(len(values) == 1 and values[0].isdigit(), "content_length", "One Content-Length is required", 411)
         size = int(values[0])
         limit = self.server.api.app.settings.max_upload
-        is_upload = self.path.split("?",1)[0] == "/loom/v1/assets"
+        path = self.path.split("?", 1)[0]
+        is_upload = path == "/loom/v1/assets" or (
+            self.command == "PUT" and path.startswith("/loom/v1/uploads/"))
         if not is_upload:
             limit = 2_100_000
         if size > limit:

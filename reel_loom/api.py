@@ -31,7 +31,7 @@ class Api:
             return app.health()
         if method == "GET" and route == "/":
             return {"name": "声画织场", "api": self.prefix,
-                    "resources": ["assets", "reels", "looks", "tickets", "analyses", "artifacts", "imprints"],
+                    "resources": ["assets", "uploads", "reels", "looks", "tickets", "analyses", "artifacts", "imprints"],
                     "time_units": "seconds at input; integer microseconds in frozen records",
                     "render_modes": ["video/h264+aac", "audio/pcm_s16le"],
                     "editing": "ordered hard cuts; immutable revisions",
@@ -41,6 +41,24 @@ class Api:
                 return app.assets.ingest(raw, headers.get("X-Media-Label", "未命名媒体"))
             if method == "GET":
                 return {"items": app.assets.list(query.get("state"))}
+        if route == "/uploads":
+            if method == "POST":
+                return app.uploads.open(self.json_body(raw))
+            if method == "GET":
+                return {"items": app.uploads.list(query.get("state"))}
+        match = re.fullmatch(r"/uploads/([^/]+)(?:/(complete|abort))?", route)
+        if match:
+            upload_id, action = match.groups()
+            if method == "GET" and not action:
+                return app.uploads.get(upload_id)
+            if method == "PUT" and not action:
+                offset = self.query_integer(query, "offset")
+                require(offset is not None, "missing_field", "Missing offset")
+                return app.uploads.receive(upload_id, offset, raw,
+                                           headers.get("X-Content-Digest"),
+                                           headers.get("X-Chunk-Digest"))
+            if method == "POST" and action in ("complete", "abort"):
+                return getattr(app.uploads, action)(upload_id)
         match = re.fullmatch(r"/assets/([^/]+)(?:/(retire|restore|signal|waveform|loudness|contact-sheet|cues|analyses|artifacts))?", route)
         if match:
             asset_id, action = match.groups()

@@ -37,6 +37,15 @@ class Client:
         # HTTP header labels are ASCII; descriptive Unicode labels belong in reel slices.
         return self.request("POST", "/assets", content, {"X-Media-Label": label})
 
+    def open_upload(self, label, size, sha256):
+        return self.request("POST", "/uploads", {"label": label, "size": size, "sha256": sha256})
+
+    def send_chunk(self, upload_id, offset, content, content_digest, chunk_digest=None):
+        headers = {"X-Content-Digest": content_digest}
+        if chunk_digest:
+            headers["X-Chunk-Digest"] = chunk_digest
+        return self.request("PUT", f"/uploads/{upload_id}?offset={offset}", content, headers)
+
     def create_reel(self, title, slices, key=None):
         return self.request("POST", "/reels", {"title": title, "slices": slices},
                             {"Idempotency-Key": key} if key else {})

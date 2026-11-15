@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from .errors import require, missing
 from .probe import inspect_media
 from .values import identifier, now, canonical, text
@@ -13,18 +14,24 @@ class Assets:
         require(0 < len(content) <= self.settings.max_upload, "upload_size", "Media body is empty or too large", 413)
         with self.blobs.temporary() as temp:
             temp.write_bytes(content)
-            metadata = inspect_media(temp, self.settings)
-            with self.db.write_unit() as db:
-                blob = self.blobs.put(temp, db)
-                row = db.execute("SELECT id FROM assets WHERE blob=? AND state='ready' ORDER BY created,id LIMIT 1",
-                                 (blob["hash"],)).fetchone()
-                if row:
-                    return self.get(row["id"], db)
-                asset_id = identifier("asset")
-                db.execute("INSERT INTO assets VALUES(?,?,?,?,?,?)",
-                           (asset_id, label, blob["hash"], canonical(metadata), "ready", now()))
-                self.db.event(db, asset_id, "ingested", {"blob": blob["hash"], "metadata": metadata})
-                return self.get(asset_id, db)
+            return self.ingest_file(temp, label)
+
+    def ingest_file(self, path, label):
+        label = text(label, "label")
+        require(0 < Path(path).stat().st_size <= self.settings.max_upload,
+                "upload_size", "Media body is empty or too large", 413)
+        metadata = inspect_media(path, self.settings)
+        with self.db.write_unit() as db:
+            blob = self.blobs.put(path, db)
+            row = db.execute("SELECT id FROM assets WHERE blob=? AND state='ready' ORDER BY created,id LIMIT 1",
+                             (blob["hash"],)).fetchone()
+            if row:
+                return self.get(row["id"], db)
+            asset_id = identifier("asset")
+            db.execute("INSERT INTO assets VALUES(?,?,?,?,?,?)",
+                       (asset_id, label, blob["hash"], canonical(metadata), "ready", now()))
+            self.db.event(db, asset_id, "ingested", {"blob": blob["hash"], "metadata": metadata})
+            return self.get(asset_id, db)
 
     def get(self, asset_id, db=None, ready=False):
         if db is None:

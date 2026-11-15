@@ -32,6 +32,12 @@ class Resources:
                 elif path.stat().st_size != row["size"]:
                     bad_size.append(row["hash"])
             known = {row["hash"] for row in rows}
+            open_uploads = [row["id"] for row in db.execute("SELECT id FROM uploads WHERE state='open' ORDER BY id")]
+        upload_scratch = []
+        for upload_id in open_uploads:
+            part = self.blobs.scratch / ("upload-" + upload_id + ".part")
+            if part.is_file():
+                upload_scratch.append({"id": upload_id, "bytes": part.stat().st_size})
         orphaned = []
         for folder in self.blobs.root.iterdir():
             if not folder.is_dir() or len(folder.name) != 2:
@@ -41,4 +47,6 @@ class Resources:
                 if path.is_file() and len(key) == 64 and key not in known:
                     orphaned.append({"hash": key, "bytes": path.stat().st_size})
         return {"consistent": not missing and not bad_size, "missing": missing,
-                "bad_size": bad_size, "unregistered_blobs": orphaned}
+                "bad_size": bad_size, "unregistered_blobs": orphaned,
+                "upload_scratch": {"sessions": upload_scratch,
+                                   "bytes": sum(item["bytes"] for item in upload_scratch)}}

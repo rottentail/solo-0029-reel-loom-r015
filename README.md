@@ -28,6 +28,7 @@ python3 -m venv .venv
 | 操作 | 入口及请求 |
 | --- | --- |
 | 接收媒体 | `POST /assets`，原始字节；`X-Media-Label` 为 ASCII 标签 |
+| 分片续传 | `POST /uploads` 声明 `{"label","size","sha256"}`；`PUT /uploads/{id}?offset=N` 携带 `X-Content-Digest` 写分片；`POST /uploads/{id}/complete` 登记来源、`abort` 终止；`GET /uploads` 查看进度 |
 | 建剪辑卷 | `POST /reels`，`{"title":"潮声短片","slices":[{"asset":"asset_…","in":0.2,"out":2.5}]}` |
 | 改稿 | `PUT /reels/{id}`，相同文档结构，`If-Match: 1`；旧版本 `GET ?revision=1` |
 | 封卷 | `POST /reels/{id}/seal`，`If-Match` 指定头修订 |
@@ -47,6 +48,8 @@ python3 -m venv .venv
 
 `Idempotency-Key` 可用于创建剪辑卷、渲染单、渲染矩阵；重放返回最初创建响应，当前状态需 GET 回读。不同内容复用同一键返回 409。所有新引用要求 ready 来源；已冻结任务可以继续读退役来源。未完成渲染不能打包。取消运行单是请求，最终状态以 GET 为准；提交成片与成功状态在同一 SQLite 事务中。
 
+较大媒体可分片接收：会话按声明的总长度与内容摘要建立，相同声明的开启会话会被复用；分片按偏移落盘，重复发送已传分段不产生重复字节，可附 `X-Chunk-Digest` 校验单段。每次接续必须携带会话声明的 `X-Content-Digest`，不符返回 409 且已传进度保留。完成时校验整体摘要并真实探测，登记为 ready 来源且同样按内容复用；未完成的会话不会出现在素材列表。终止会话立即释放暂存空间；会话与分片记录持久化，服务重启后仍可解释哪些可接续、哪些已完成。
+
 视频版式输出 H.264/AAC MP4，音频版式输出 PCM WAV；版式支持 1/2 声道、采样率、常量增益、contain/cover 和恒定帧率。剪辑卷当前采用顺序硬切，不具备多轨、转场、变速、字幕烧录或分段流能力。字幕保留源时间并在投影时按剪辑区间裁切；字幕轨创建后不可变。signal 输出 dBFS，loudness 才是 EBU R128，二者不可互换。
 
 ## 构建与生产流程校验
@@ -56,6 +59,6 @@ python3 -m venv .venv
 .venv/bin/python -m reel_loom.demo --workflow conformance
 ```
 
-全部 16 个有界流程记录在 `.project-runtime.json`，每条都经过真实领域与持久化路径，并观察成功或拒绝结果。测试延后：基线不包含单元/集成测试文件、不声明 test_command；这些生产示例不是完整测试保障。后续质量保障任务可从这些入口补建测试。
+全部 17 个有界流程记录在 `.project-runtime.json`，每条都经过真实领域与持久化路径，并观察成功或拒绝结果。测试延后：基线不包含单元/集成测试文件、不声明 test_command；这些生产示例不是完整测试保障。后续质量保障任务可从这些入口补建测试。
 
 源映射见 `.task-source.json`，业务边界见 `PROJECT_SPEC.md`。题库和内部难度证据在仓库外独立维护，不属于基线运行依赖。

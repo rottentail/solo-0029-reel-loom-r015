@@ -121,6 +121,11 @@
       "id": "timebase",
       "path": "reel_loom/timebase.py",
       "responsibility": "timebase"
+    },
+    {
+      "id": "uploads",
+      "path": "reel_loom/uploads.py",
+      "responsibility": "uploads"
     }
   ],
   "workflows": [
@@ -439,6 +444,27 @@
         "api",
         "lineage",
         "tickets",
+        "database"
+      ]
+    },
+    {
+      "id": "uploads",
+      "name": "断点续传媒体接收",
+      "entry": "POST /uploads + PUT /uploads/{id}",
+      "success": "分片按声明摘要接续，完成探测后登记 ready 来源并复用",
+      "failure": "接续内容不一致冲突且进度保留",
+      "verification": ".venv/bin/python -m reel_loom.demo --workflow uploads",
+      "steps": [
+        "输入经公开入口到领域规则",
+        "跨媒体或持久化边界提交结果",
+        "回读结果并观察拒绝路径"
+      ],
+      "module_ids": [
+        "api",
+        "uploads",
+        "assets",
+        "probe",
+        "blobs",
         "database"
       ]
     }

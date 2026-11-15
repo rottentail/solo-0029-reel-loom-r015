@@ -57,6 +57,13 @@ def token(value, field):
     return value
 
 
+def digest_hex(value, field):
+    require(isinstance(value, str) and len(value) == 64
+            and all(c in "0123456789abcdef" for c in value),
+            "invalid_digest", f"{field} must be a lowercase sha256 hex digest")
+    return value
+
+
 def decode_json(raw):
     def reject_duplicate(pairs):
         result = {}

@@ -1,6 +1,7 @@
 """A bounded production walkthrough using generated audiovisual media and HTTP."""
 import argparse
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -13,7 +14,7 @@ from .http import MediaHttpServer
 from .client import Client
 from .errors import LoomError, require
 
-WORKFLOWS = ("ingest", "revisions", "looks", "render", "signal", "waveform", "loudness",
+WORKFLOWS = ("ingest", "uploads", "revisions", "looks", "render", "signal", "waveform", "loudness",
              "sheet", "captions", "imprint", "cancel-retry", "recovery", "resources", "matrix", "conformance", "lineage")
 
 
@@ -40,6 +41,14 @@ class Walkthrough:
         self.server.server_close()
         self.thread.join(timeout=2)
         self.app.close()
+
+    def restart(self):
+        self.close()
+        self.app = Application(self.settings, start_workers=False)
+        self.server = MediaHttpServer(("127.0.0.1", 0), Api(self.app))
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": .02}, daemon=True)
+        self.thread.start()
+        self.client = Client(f"http://127.0.0.1:{self.server.server_port}/loom/v1")
 
     def setup(self):
         with self.app.blobs.temporary(".mp4") as sample:
@@ -72,6 +81,80 @@ class Walkthrough:
             require(duplicate["id"] == a, "walkthrough_dedup", "Identical ready media should be reused")
             failure = expect_error(lambda: c.ingest(b"not-media", "bad"), "unreadable_media")
             return {"asset": self.asset, "deduplicated": True, "failure": failure}
+        if name == "uploads":
+            # 独立媒体，避免与整段上传样片内容相同
+            with self.app.blobs.temporary(".mp4") as sample:
+                self.app.processes.run(["-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=2",
+                                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+                                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(sample)])
+                content = sample.read_bytes()
+            digest, size, half = hashlib.sha256(content).hexdigest(), len(content), len(content)//2
+            session = c.open_upload("分段样片", size, digest)
+            uid = session["id"]
+            require(session["state"] == "open" and session["received"] == 0,
+                    "walkthrough_upload", "A new session should be open and empty")
+            first = c.send_chunk(uid, 0, content[:half], digest, hashlib.sha256(content[:half]).hexdigest())
+            require(first["received"] == half and first["ranges"] == [[0, half]],
+                    "walkthrough_upload", "Chunk progress is not reported")
+            replay = c.send_chunk(uid, 0, content[:half], digest)
+            require(replay["received"] == half, "walkthrough_upload", "A replayed chunk duplicated bytes")
+            require(all(item["blob"] != digest for item in c.request("GET", "/assets")["items"]),
+                    "walkthrough_upload", "An incomplete upload became selectable media")
+            failure_incomplete = expect_error(lambda: c.request("POST", f"/uploads/{uid}/complete"),
+                                              "upload_incomplete")
+            other_digest = hashlib.sha256(b"another-program").hexdigest()
+            failure_conflict = expect_error(lambda: c.send_chunk(uid, half, content[half:half+64], other_digest),
+                                            "upload_conflict")
+            require(c.request("GET", f"/uploads/{uid}")["received"] == half,
+                    "walkthrough_upload", "A conflicting continuation erased progress")
+            pinned = hashlib.sha256(content[:4096]).hexdigest()
+            impostor = c.open_upload("冒充接续", 4096, pinned)
+            c.send_chunk(impostor["id"], 0, bytes(4096), pinned)
+            failure_mismatch = expect_error(lambda: c.request("POST", f"/uploads/{impostor['id']}/complete"),
+                                            "upload_mismatch")
+            impostor_state = c.request("GET", f"/uploads/{impostor['id']}")
+            require(impostor_state["state"] == "open" and impostor_state["received"] == 4096,
+                    "walkthrough_upload", "A mismatched completion did not preserve progress")
+            aborted = c.request("POST", f"/uploads/{impostor['id']}/abort")
+            require(aborted["state"] == "aborted"
+                    and not (Path(self.settings.root)/"scratch"/f"upload-{impostor['id']}.part").exists(),
+                    "walkthrough_upload", "An aborted upload kept scratch space")
+            resumed = c.send_chunk(uid, half, content[half:], digest)
+            require(resumed["received"] == size, "walkthrough_upload", "Resume did not reach full coverage")
+            asset = c.request("POST", f"/uploads/{uid}/complete")
+            require(asset["state"] == "ready" and asset["blob"] == digest,
+                    "walkthrough_upload", "A completed upload is not a ready source")
+            require(asset["metadata"]["has_video"] and asset["metadata"]["has_audio"],
+                    "walkthrough_upload", "Completed media was not really probed")
+            signal = c.request("POST", f"/assets/{asset['id']}/signal", {})
+            require(signal["result"]["samples"] > 0, "walkthrough_upload", "Completed media did not really decode")
+            reel = c.create_reel("续传剪辑", [{"asset": asset["id"], "in": .2, "out": 1.2}])
+            require(reel["document"]["slices"][0]["asset"] == asset["id"],
+                    "walkthrough_upload", "A completed source cannot be edited")
+            reused = c.ingest(content, "whole-again")
+            require(reused["id"] == asset["id"], "walkthrough_upload", "Whole-upload reuse regressed")
+            require(not (Path(self.settings.root)/"scratch"/f"upload-{uid}.part").exists(),
+                    "walkthrough_upload", "A completed upload kept scratch space")
+            pending = c.open_upload("重启续传", size, digest)
+            c.send_chunk(pending["id"], 0, content[:half], digest)
+            self.restart()
+            c = self.client
+            health = c.request("GET", "/health")
+            require(health["upload_recovery"]["open_sessions"] >= 1,
+                    "walkthrough_upload", "Restart lost resumable sessions")
+            opened = c.request("GET", "/uploads?state=open")["items"]
+            require(any(item["id"] == pending["id"] and item["received"] == half for item in opened),
+                    "walkthrough_upload", "Restart lost resumable progress")
+            done = c.request("GET", f"/uploads/{uid}")
+            require(done["state"] == "completed" and done["asset"] == asset["id"],
+                    "walkthrough_upload", "Restart lost a completed session")
+            finished = c.send_chunk(pending["id"], half, content[half:], digest)
+            require(finished["received"] == size, "walkthrough_upload", "Post-restart resume failed")
+            asset2 = c.request("POST", f"/uploads/{pending['id']}/complete")
+            require(asset2["id"] == asset["id"], "walkthrough_upload", "Post-restart completion did not reuse content")
+            return {"asset": asset, "reel": reel["id"], "resumed_after_restart": pending["id"],
+                    "failures": {"incomplete": failure_incomplete, "conflict": failure_conflict,
+                                 "mismatch": failure_mismatch}}
         if name == "revisions":
             updated = c.replace_reel(self.reel["id"], 1, "回声样片·修订", list(reversed(self.slices)))
             old = c.request("GET", "/reels/"+self.reel["id"]+"?revision=1")

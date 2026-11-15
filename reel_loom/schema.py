@@ -54,6 +54,17 @@ CREATE TABLE IF NOT EXISTS imprints(
  manifest TEXT NOT NULL, blob TEXT NOT NULL REFERENCES blobs(hash),
  fingerprint TEXT NOT NULL UNIQUE, created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS uploads(
+ id TEXT PRIMARY KEY, label TEXT NOT NULL, size INTEGER NOT NULL CHECK(size>0),
+ sha256 TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('open','completed','aborted')),
+ asset TEXT REFERENCES assets(id), error TEXT, created REAL NOT NULL, updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS upload_state ON uploads(state,created,id);
+CREATE TABLE IF NOT EXISTS upload_chunks(
+ upload TEXT NOT NULL REFERENCES uploads(id), position INTEGER NOT NULL CHECK(position>=0),
+ length INTEGER NOT NULL CHECK(length>0), digest TEXT NOT NULL, created REAL NOT NULL,
+ PRIMARY KEY(upload,position,length)
+);
 CREATE TABLE IF NOT EXISTS events(
  sequence INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT NOT NULL,
  kind TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL
